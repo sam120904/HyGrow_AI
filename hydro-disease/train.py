@@ -1,3 +1,9 @@
+import argparse
+import json
+import random
+from pathlib import Path
+
+import numpy as np
 import torch  # pyrefly: ignore[missing-import]
 import torch.nn as nn  # pyrefly: ignore[missing-import]
 from torch.utils.data import DataLoader  # pyrefly: ignore[missing-import]
@@ -6,7 +12,9 @@ from tqdm import tqdm  # pyrefly: ignore[missing-import]
 from dataset import AlbumentationsDataset, TRAIN_TRANSFORM, VAL_TRANSFORM  # pyrefly: ignore[missing-import]
 
 # ── CONFIG ──────────────────────────────────
-NUM_CLASSES = 15       # actual class folders in data/processed/train
+BASE = Path(__file__).resolve().parent
+CLASS_NAMES = json.loads((BASE / "class_names.json").read_text(encoding="utf-8"))
+NUM_CLASSES = len(CLASS_NAMES)
 BATCH_SIZE  = 64       # safe for 8GB VRAM; use 32 if OOM
 EPOCHS_HEAD = 5        # train classifier head only first
 EPOCHS_FULL = 20       # then unfreeze all layers
@@ -35,13 +43,29 @@ def run_epoch(model, loader, criterion, optimizer, train=True):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Fine-tune MobileNetV3 on prepared PlantVillage data")
+    parser.add_argument("--data-dir", type=Path, default=BASE / "data" / "plantvillage-hf")
+    parser.add_argument("--checkpoint", type=Path, default=BASE / "models" / "checkpoints" / "mobilenetv3_best.pth")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--epochs-head", type=int, default=EPOCHS_HEAD)
+    parser.add_argument("--epochs-full", type=int, default=EPOCHS_FULL)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     print(f"Training on: {DEVICE}")
 
     # ── DATA ────────────────────────────────────
-    train_ds = AlbumentationsDataset("data/processed/train", TRAIN_TRANSFORM)
-    val_ds   = AlbumentationsDataset("data/processed/val",   VAL_TRANSFORM)
-    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=4, pin_memory=True)
-    val_dl   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    train_ds = AlbumentationsDataset(args.data_dir / "train", TRAIN_TRANSFORM)
+    val_ds   = AlbumentationsDataset(args.data_dir / "val", VAL_TRANSFORM)
+    if train_ds.classes != CLASS_NAMES or val_ds.classes != CLASS_NAMES:
+        raise ValueError("Dataset class order differs from class_names.json")
+    train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=DEVICE.type == "cuda")
+    val_dl = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=DEVICE.type == "cuda")
+    args.checkpoint.parent.mkdir(parents=True, exist_ok=True)
 
     # ── MODEL ───────────────────────────────────
     model = models.mobilenet_v3_large(weights="IMAGENET1K_V2")
@@ -58,10 +82,14 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     print("Phase A — training head")
-    for ep in range(EPOCHS_HEAD):
+    best_val_acc = -1.0
+    for ep in range(args.epochs_head):
         tr_loss, tr_acc = run_epoch(model, train_dl, criterion, optimizer, train=True)
         vl_loss, vl_acc = run_epoch(model, val_dl, criterion, optimizer, train=False)
-        print(f"Ep {ep+1}/{EPOCHS_HEAD} | train acc {tr_acc:.3f} | val acc {vl_acc:.3f}")
+        print(f"Ep {ep+1}/{args.epochs_head} | train acc {tr_acc:.3f} | val acc {vl_acc:.3f}")
+        if vl_acc > best_val_acc:
+            best_val_acc = vl_acc
+            torch.save(model.state_dict(), args.checkpoint)
 
     # ── PHASE B: Unfreeze all, fine-tune ──
     print("\nPhase B — full fine-tune")
@@ -69,17 +97,16 @@ if __name__ == '__main__':
         param.requires_grad = True
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR_FULL, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS_FULL)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs_full))
 
-    best_val_acc = 0
-    for ep in range(EPOCHS_FULL):
+    for ep in range(args.epochs_full):
         tr_loss, tr_acc = run_epoch(model, train_dl, criterion, optimizer, train=True)
         vl_loss, vl_acc = run_epoch(model, val_dl, criterion, optimizer, train=False)
         scheduler.step()
-        print(f"Ep {ep+1}/{EPOCHS_FULL} | train {tr_acc:.3f} | val {vl_acc:.3f}")
+        print(f"Ep {ep+1}/{args.epochs_full} | train {tr_acc:.3f} | val {vl_acc:.3f}")
         if vl_acc > best_val_acc:
             best_val_acc = vl_acc
-            torch.save(model.state_dict(), "models/checkpoints/mobilenetv3_best.pth")
+            torch.save(model.state_dict(), args.checkpoint)
             print(f"  ✓ saved checkpoint (val acc {vl_acc:.3f})")
 
     print(f"\nDone. Best val accuracy: {best_val_acc:.3f}")

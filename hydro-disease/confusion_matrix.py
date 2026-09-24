@@ -1,4 +1,5 @@
 """Generate a visual confusion matrix from the test set."""
+import json
 import torch  # pyrefly: ignore[missing-import]
 import torch.nn as nn  # pyrefly: ignore[missing-import]
 import numpy as np  # pyrefly: ignore[missing-import]
@@ -23,8 +24,11 @@ if __name__ == "__main__":
     model.eval()
 
     # Load test data
-    test_ds = AlbumentationsDataset(str(BASE_DIR / "data" / "processed" / "test"), VAL_TRANSFORM)
+    test_ds = AlbumentationsDataset(str(BASE_DIR / "data" / "plantvillage-hf" / "test"), VAL_TRANSFORM)
     class_names = test_ds.classes
+    expected_names = json.loads((BASE_DIR / "class_names.json").read_text(encoding="utf-8"))
+    if class_names != expected_names:
+        raise ValueError("Dataset class order differs from class_names.json")
     loader = DataLoader(test_ds, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
     # Collect predictions
@@ -43,7 +47,8 @@ if __name__ == "__main__":
         cm[t][p] += 1
 
     # Normalize to percentages (row-wise = recall per class)
-    cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100
+    cm_pct = np.divide(cm.astype(float), cm.sum(axis=1, keepdims=True),
+                       out=np.zeros_like(cm, dtype=float), where=cm.sum(axis=1, keepdims=True) != 0) * 100
 
     # Shorten class names for display
     short_names = [name.replace("___", ": ").replace("__", ": ").replace("_", " ") for name in class_names]

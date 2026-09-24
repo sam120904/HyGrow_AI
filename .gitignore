@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+/data/
+/plantdisease/
+/hydro-disease/data/
+/hydro-disease/models/checkpoints/eval_*.json

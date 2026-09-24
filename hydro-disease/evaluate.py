@@ -60,7 +60,7 @@ def compute_metrics(y_true: list, y_pred: list, class_names: list) -> dict:
 
     return {
         "accuracy": round(accuracy * 100, 2),
-        "macro_f1": round(float(macro_f1) * 100, 2),
+        "macro_f1": round(float(macro_f1), 2),
         "per_class": per_class,
     }
 
@@ -71,11 +71,11 @@ def print_report(metrics: dict) -> None:
     print(f"{'Class':40s} {'Prec':>7s} {'Recall':>7s} {'F1':>7s} {'Support':>8s}")
     print(f"{'─' * 72}")
     for cls, m in metrics["per_class"].items():
-        print(f"{cls:40s} {m['precision']:7.2%} {m['recall']:7.2%} "
-              f"{m['f1']:7.2%} {m['support']:>8d}")
+        print(f"{cls:40s} {m['precision']:7.2f} {m['recall']:7.2f} "
+              f"{m['f1']:7.2f} {m['support']:>8d}")
     print(f"{'─' * 72}")
-    print(f"{'Overall Accuracy':40s} {metrics['accuracy']:7.2%}")
-    print(f"{'Macro F1':40s} {metrics['macro_f1']:7.2%}")
+    print(f"{'Overall Accuracy':40s} {metrics['accuracy']:7.2f}%")
+    print(f"{'Macro F1':40s} {metrics['macro_f1']:7.2f}%")
     print(f"{'─' * 72}\n")
 
 
@@ -127,9 +127,12 @@ def main(args):
     model.eval()
 
     # --- Data ---
-    data_dir = args.data_dir if args.data_dir else str(BASE_DIR / "data" / "processed" / args.split)
+    data_dir = args.data_dir if args.data_dir else str(args.dataset_root / args.split)
     test_ds = AlbumentationsDataset(data_dir, VAL_TRANSFORM)
     class_names = test_ds.classes
+    expected_names = json.loads((BASE_DIR / "class_names.json").read_text(encoding="utf-8"))
+    if class_names != expected_names:
+        raise ValueError("Dataset class order differs from class_names.json")
     loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
                         num_workers=4, pin_memory=True)
 
@@ -157,6 +160,7 @@ def main(args):
 
     # --- Save results ---
     results_path = CKPT_DIR / f"eval_{args.split}.json"
+    results_path.parent.mkdir(parents=True, exist_ok=True)
     with open(results_path, "w") as f:
         json.dump(metrics, f, indent=2)
     print(f"💾 Results saved → {results_path}")
@@ -175,6 +179,8 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Custom data directory (only with --split custom)")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--dataset-root", type=Path,
+                        default=BASE_DIR / "data" / "plantvillage-hf")
     parser.add_argument("--confusion-matrix", action="store_true", default=True)
     parser.add_argument("--no-confusion-matrix", dest="confusion_matrix",
                         action="store_false")
